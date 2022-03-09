@@ -1,7 +1,8 @@
 from re import L
+from tracemalloc import start
 import dropbox
 from os import listdir
-from os.path import isfile, join, isdir
+from os.path import isfile, join, isdir, isabs
 import os
 from tqdm import tqdm
 from dropbox.files import WriteMode
@@ -11,40 +12,56 @@ import multiprocessing
 from utils_mp import MyPool
 from functools import partialmethod, partial
 import time
+import subprocess
 
-class UploadData:
-    def __init__(self, access_token, source_dir, target_dir):
-        self.access_token = access_token
-        self.source = source_dir
-        self.target = target_dir
-
-    def upload_folder(self):
-        """Updates folder in dropbox
-        """
-        dbx = dropbox.Dropbox(self.access_token)
-        orgpath = self.source
-        destpath = self.target
-        fileslist = [f for f in listdir(orgpath) if isfile(join(orgpath, f))]
-        # print(onlyfiles)
-        for file in fileslist:
-            file_from = join(orgpath, file)
-            print(file_from)
-            self.upload(dbx, file_from, join(destpath, file))
-
-    def upload_file(self, source, dest):
-        file = source.split('/')[-1] # get the file name
-        dbx = dropbox.Dropbox(self.access_token)
-        self.upload(dbx, source, join(dest, file))
+class DropboxBackupTool:
+    def __init__(self, access_token, source_dir, num_processes=1):
+        self.contents = self.get_content_list(source_dir)
+        self.source_dir = source_dir
+        self.__access_token = access_token
+        self.num_processes = num_processes
+        assert num_processes < 24, "Number of processes should be less than 24"
 
     @staticmethod
-    def upload(
-            dbx,
+    def get_content_list(current_dir):
+        all_contents = listdir(current_dir)
+        return all_contents
+
+    @staticmethod
+    def compress_dir(name):
+        if isabs(name):
+            dir_name = name.split('/')[-1]
+        else:
+            dir_name = name
+
+        command = f"tar -I pigz -cf {dir_name}.tgz {name}"
+        start = time.time()
+        process = subprocess.Popen(command.split(), stdout=subprocess.PIPE)
+        output, error = process.communicate()
+        print(f'time taken for compression of {name}: {time.time() - start}')
+
+    @staticmethod
+    def uncompress(name):
+        command = f"tar -I pigz -xf {name}"
+        start = time.time()
+        process = subprocess.Popen(command.split(), stdout=subprocess.PIPE)
+        output, error = process.communicate()
+        print(f'time taken for decompression of {name}: {time.time() - start}')
+    
+    @staticmethod
+    def delete_tgz(name):
+        tarfile =  f"{name}.tgz"
+        os.remove(tarfile)
+        print(f"deleted {tarfile}")
+
+    def _upload(
+            self,
             file_path,
             target_path,
             timeout=900,
             chunk_size=50 * 1024 * 1024,
     ):
-        # dbx = dropbox.Dropbox(access_token, timeout=timeout)
+        dbx = dropbox.Dropbox(self.__access_token, timeout=timeout)
         with open(file_path, "rb") as f:
             file_size = os.path.getsize(file_path)
             if file_size <= chunk_size:
@@ -65,12 +82,12 @@ class UploadData:
                     while f.tell() < file_size:
                         if (file_size - f.tell()) <= chunk_size:
                             # print(
-                                dbx.files_upload_session_finish(
+                                dbx.files_upload_session_finish_batch(
                                     f.read(chunk_size), cursor, commit
                                 )
                             # )
                         else:
-                            dbx.files_upload_session_append(
+                            dbx.files_upload_session_append_v2(
                                 f.read(chunk_size),
                                 cursor.session_id,
                                 cursor.offset,
@@ -78,153 +95,58 @@ class UploadData:
                             cursor.offset = f.tell()
                         pbar.update(chunk_size)
 
-  
+    def _create_backup_content(self, content):
+        if(isfile(join(self.source_dir, content))):
+            print(f'file: {join(self.source_dir, content)}')
+            self._upload(join(self.source_dir, content), join('/', content))
 
-# class DropboxBackupTool:
-#     def __init__(self, access_token, source_dir, threads=2):
-#         self.setup_db(access_token, source_dir)
-#         self.setup_mp(threads)
-#         upload(source_dir, '/', )
-        
+        elif(isdir(join(self.source_dir, content))):
+            print(f'dir: {join(self.source_dir, content)}')
+            self.compress_dir(content)
+            print(f"uploading: {join(self.source_dir, content)+'.tgz'}...")
+            self._upload(join(self.source_dir, content)+'.tgz', join('/', content+'.tgz'))
+            print('finished uploading')
+            self.delete_tgz(content)
 
-#     def setup_mp(self, threads):
-#         self.process_id = os.getpid()
-#         self.threads = threads
-#         self.parallel = None
+    def _create_backup(self):
+        for content in self.contents:
+            self._create_backup_content(content)
 
-#     def setup_db(self, access_token, source_dir):
-#         self.access_token = access_token
-#         self.source = source_dir
-#         self.target = '/'
-#         self.dbx = dropbox.Dropbox(self.access_token)
+    def _create_backup_mp(self):
+        with MyPool(self.num_processes) as pool:
+            pool.map(self._create_backup_content, self.contents)
 
-class DropBoxConfig:
-    def __init__(self, access_token, threads):
-        self.access_token = access_token
-        # self.source = source_dir
-        # self.target = target_dir
-        self.threads = threads
-        self.parallel = None
-        self.dbx = dropbox.Dropbox(self.access_token)
+    # def backup_single_dir(self, dirpath):
+    #     if not isdir(dirpath):
+    #         raise NotADirectoryError("Can't find directory")
+    #     if isabs(dirpath):
+    #         dir_name = dirpath.split('/')[-1]
+    #     else:
+    #         dir_name = dirpath
 
-        self.main_process_id = os.getpid()
-        self.children = 0
-        self.active_processes = 0
-        self.pool = MyPool(self.threads)
+    #     start = time.time()
+    #     print(f'dir: {dirpath}')
+    #     self.compress_dir(dirpath)
+    #     print(f"uploading: {join(self.source_dir, dir_name)+'.tgz'}...")
+    #     self._upload(join(dirpath, f'{dir}.tgz'), join('/', dir_name+'.tgz'))
+    #     print('finished uploading')
+    #     self.delete_tgz(dirpath)
+    #     print(f"Total time taken for backup of {dirpath}: {time.time() - start}")
 
-def upload(current_dir, target_dir, dbconfig):
-
-    all_contents = listdir(current_dir)
-
-    # Base case: if the directory is empty, dont do anything
-    if len(all_contents) == 0:
-        return
-
-    main_process = psutil.Process(dbconfig.main_process_id)
-    children = main_process.children(recursive=True)
-    active_processes = len(children) + 1 #plus parent
-    new_processes = len(all_contents)
-
-    print('Current active processes: ', active_processes)
-    print('New processes: ', new_processes)
-    pool = dbconfig.pool
-    if dbconfig.threads > active_processes: # if there are more processes than threads, start new processes
-        pool.map_async(partial(dispatch_upload, current_dir=current_dir, target_dir=target_dir, dbconfig=dbconfig), all_contents)
-    else:
-        for content in all_contents:
-            # pool.apply_async(partial(dispatch_upload, current_dir=current_dir, target_dir=target_dir, dbconfig=dbconfig), (content,))
-            dispatch_upload(content=content, current_dir=current_dir, target_dir=target_dir, dbconfig=dbconfig)
-
-def dispatch_upload(content, current_dir, target_dir, dbconfig): 
-    if isfile(join(current_dir, content)):
-        print(f'filepath: {join(current_dir, content)} target: {join(target_dir, content)}')
-        upload_file(join(current_dir, content), target_dir, dbconfig)
-    
-    elif isdir(join(current_dir, content)):
-        # If the content is a file, upload it; if it is a directory, recursively call the function
-        print(f'moving into directory: {join(current_dir, content)}')
-        upload(join(current_dir, content), join(target_dir, content), dbconfig)
-
-
-def upload_file(source, dest, dbconfig):
-    file = source.split('/')[-1] # get the file name
-    # dbx = dropbox.Dropbox(self.access_token)
-    _upload(source, join(dest, file), dbconfig)
-
-
-def _upload(
-        file_path,
-        target_path,
-        dbconfig,
-        timeout=900,
-        chunk_size=50 * 1024 * 1024,
-):
-    # dbx = dropbox.Dropbox(dbconfig.access_token, timeout=timeout)
-    dbx = dbconfig.dbx
-    with open(file_path, "rb") as f:
-        file_size = os.path.getsize(file_path)
-        if file_size <= chunk_size:
-            # print(
-                dbx.files_upload(f.read(), target_path, mode=dropbox.files.WriteMode.overwrite)
-                # )
+    def backup_all(self):
+        start = time.time()
+        if self.num_processes == 1:
+            self._create_backup()
         else:
-            with tqdm(total=file_size, desc="Uploaded") as pbar:
-                upload_session_start_result = dbx.files_upload_session_start(
-                    f.read(chunk_size)
-                )
-                pbar.update(chunk_size)
-                cursor = dropbox.files.UploadSessionCursor(
-                    session_id=upload_session_start_result.session_id,
-                    offset=f.tell(),
-                )
-                commit = dropbox.files.CommitInfo(path=target_path, mode=dropbox.files.WriteMode.overwrite) # mode is required to enable overwrite
-                while f.tell() < file_size:
-                    if (file_size - f.tell()) <= chunk_size:
-                        # print(
-                            dbx.files_upload_session_finish_batch(
-                                f.read(chunk_size), cursor, commit
-                            )
-                        # )
-                    else:
-                        dbx.files_upload_session_append_v2(
-                            f.read(chunk_size),
-                            cursor.session_id,
-                            cursor.offset,
-                        )
-                        cursor.offset = f.tell()
-                    pbar.update(chunk_size)
-
-
-def main():
-    with open("/hdd2/extra_home/sdash38/dropbox_keys/backup.txt", "r") as f:
-        access_token = f.read().strip()
-    orgpath = './'
-    destpath = '/'
-    uploaddata = UploadData(access_token, orgpath)
-    # uploaddata.upload_file(os.path.join(orgpath,"test_file.txt"), destpath)
-    uploaddata.upload_folder()
-    # uploaddata.upload_folder()
-
-def main2():
-    with open("/hdd2/extra_home/sdash38/dropbox_keys/backup.txt", "r") as f:
-        access_token = f.read().strip()
-    orgpath = './'
-    dbtool = DropboxBackupTool(access_token, orgpath)
-    # dbtool.upload(os.getcwd(), '/')
-
-def main3():
-    with open("/hdd2/extra_home/sdash38/dropbox_keys/backup.txt", "r") as f:
-        access_token = f.read().strip()
-    dbconfig = DropBoxConfig(access_token=access_token, threads=16)
-    start = time.time()
-    upload('./', '/', dbconfig)
-    print(f'Time taken: {(time.time() - start)/3600} hours')
-    dbconfig.pool.close()
-    dbconfig.pool.join()
+            self._create_backup_mp()
+        print(f"Total time taken for backup: {time.time() - start}")
 
 if __name__ == '__main__':
-    # g = partial(add,a=1, c=2)
-    # g(5)
+    with open("/hdd2/extra_home/sdash38/dropbox_keys/backup.txt", "r") as f:
+        access_token = f.read().strip()
 
-    main3()
-    
+    dbtool = DropboxBackupTool(access_token, './', num_processes=4)
+    dbtool.backup_all()
+    # dbtool.backup_single_dir('/hdd2/extra_home/sdash38/matchbox')
+    # dbtool.compress_dir('./.git')
+    # dbtool.uncompress('test_folder.tgz')
