@@ -1,0 +1,17 @@
+certifi==2021.10.8
+charset-normalizer==2.0.12
+ConnPlotter==0.7a0
+dropbox==11.28.0
+idna==3.3
+importlib-resources==5.4.0
+pkg-resources==0.0.0
+ply==3.11
+psutil==5.9.0
+PyNEST===nest-2.20.1
+requests==2.27.1
+six==1.16.0
+stone==3.3.1
+Topology===nest-2.20.1
+tqdm==4.63.0
+urllib3==1.26.8
+zipp==3.6.0

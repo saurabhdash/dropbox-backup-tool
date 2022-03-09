@@ -1,5 +1,3 @@
-from re import L
-from tracemalloc import start
 import dropbox
 from os import listdir
 from os.path import isfile, join, isdir, isabs
@@ -7,12 +5,10 @@ import os
 from tqdm import tqdm
 from dropbox.files import WriteMode
 import os
-import psutil
 import multiprocessing
-from utils_mp import MyPool
-from functools import partialmethod, partial
 import time
 import subprocess
+from pathlib import Path
 
 class DropboxBackupTool:
     def __init__(self, access_token, source_dir, num_processes=1):
@@ -28,7 +24,7 @@ class DropboxBackupTool:
         return all_contents
 
     @staticmethod
-    def compress_dir(name):
+    def compress_dir(name, path=None):
         if isabs(name):
             dir_name = name.split('/')[-1]
         else:
@@ -36,17 +32,17 @@ class DropboxBackupTool:
 
         command = f"tar -I pigz -cf {dir_name}.tgz {name}"
         start = time.time()
-        process = subprocess.Popen(command.split(), stdout=subprocess.PIPE)
+        process = subprocess.Popen(command.split(), stdout=subprocess.PIPE, cwd=str(path.parent.absolute()))
         output, error = process.communicate()
         print(f'time taken for compression of {name}: {time.time() - start}')
 
     @staticmethod
-    def uncompress(name):
-        command = f"tar -I pigz -xf {name}"
+    def uncompress(file, path=None):
+        command = f"tar -I pigz -xf {file}"
         start = time.time()
-        process = subprocess.Popen(command.split(), stdout=subprocess.PIPE)
+        process = subprocess.Popen(command.split(), stdout=subprocess.PIPE, cwd=str(path.parent.absolute()))
         output, error = process.communicate()
-        print(f'time taken for decompression of {name}: {time.time() - start}')
+        print(f'time taken for decompression of {file}: {time.time() - start}')
     
     @staticmethod
     def delete_tgz(name):
@@ -82,12 +78,12 @@ class DropboxBackupTool:
                     while f.tell() < file_size:
                         if (file_size - f.tell()) <= chunk_size:
                             # print(
-                                dbx.files_upload_session_finish_batch(
+                                dbx.files_upload_session_finish(
                                     f.read(chunk_size), cursor, commit
                                 )
                             # )
                         else:
-                            dbx.files_upload_session_append_v2(
+                            dbx.files_upload_session_append(
                                 f.read(chunk_size),
                                 cursor.session_id,
                                 cursor.offset,
@@ -102,36 +98,37 @@ class DropboxBackupTool:
 
         elif(isdir(join(self.source_dir, content))):
             print(f'dir: {join(self.source_dir, content)}')
-            self.compress_dir(content)
+            self.compress_dir(content, path = Path(join(self.source_dir, content)))
             print(f"uploading: {join(self.source_dir, content)+'.tgz'}...")
             self._upload(join(self.source_dir, content)+'.tgz', join('/', content+'.tgz'))
             print('finished uploading')
-            self.delete_tgz(content)
+            self.delete_tgz(os.path.join(self.source_dir, content))
 
     def _create_backup(self):
         for content in self.contents:
             self._create_backup_content(content)
 
     def _create_backup_mp(self):
-        with MyPool(self.num_processes) as pool:
+        with multiprocessing.Pool(self.num_processes) as pool:
             pool.map(self._create_backup_content, self.contents)
 
-    # def backup_single_dir(self, dirpath):
-    #     if not isdir(dirpath):
-    #         raise NotADirectoryError("Can't find directory")
-    #     if isabs(dirpath):
-    #         dir_name = dirpath.split('/')[-1]
-    #     else:
-    #         dir_name = dirpath
+    def backup_single_dir(self, dirpath):
+        path = Path(dirpath)
+        if not path.exists():
+            raise NotADirectoryError("Can't find directory")
+        if isabs(dirpath):
+            dir_name = dirpath.split('/')[-1]
+        else:
+            dir_name = dirpath
 
-    #     start = time.time()
-    #     print(f'dir: {dirpath}')
-    #     self.compress_dir(dirpath)
-    #     print(f"uploading: {join(self.source_dir, dir_name)+'.tgz'}...")
-    #     self._upload(join(dirpath, f'{dir}.tgz'), join('/', dir_name+'.tgz'))
-    #     print('finished uploading')
-    #     self.delete_tgz(dirpath)
-    #     print(f"Total time taken for backup of {dirpath}: {time.time() - start}")
+        start = time.time()
+        print(f'dir: {dirpath}')
+        self.compress_dir(dirpath, path)
+        print(f"uploading: {join(str(path.parent.absolute()), dir_name)+'.tgz'}...")
+        self._upload(join(str(path.parent.absolute()), f'{dir_name}.tgz'), join('/', dir_name+'.tgz'))
+        print('finished uploading')
+        self.delete_tgz(dirpath)
+        print(f"Total time taken for backup of {dirpath}: {time.time() - start}")
 
     def backup_all(self):
         start = time.time()
@@ -145,8 +142,5 @@ if __name__ == '__main__':
     with open("/hdd2/extra_home/sdash38/dropbox_keys/backup.txt", "r") as f:
         access_token = f.read().strip()
 
-    dbtool = DropboxBackupTool(access_token, './', num_processes=4)
+    dbtool = DropboxBackupTool(access_token, '/hdd2/extra_home/sdash38/test_folder', num_processes=2)
     dbtool.backup_all()
-    # dbtool.backup_single_dir('/hdd2/extra_home/sdash38/matchbox')
-    # dbtool.compress_dir('./.git')
-    # dbtool.uncompress('test_folder.tgz')
