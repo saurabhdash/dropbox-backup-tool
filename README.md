@@ -1,6 +1,7 @@
 # This tool helps backup a directory or its contents to dropbox
 
 ## Requirements
+pigz which can be installed using sudo apt install pigz 
 Dropbox app token
 
 
