@@ -10,7 +10,7 @@ This tool helps backup a directory or its contents to dropbox
 ## Usage
 To setup the tool, run:
 
-'bash setup.sh'
+`bash setup.sh`
 
 To run the tool:
 In run.sh, update the variables:
@@ -21,4 +21,4 @@ In run.sh, update the variables:
 <li>num_processes: number of threads for parallel uploads</li>
 </ul>
 
-'bash run.sh'
+`bash run.sh`
